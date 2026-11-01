@@ -1,0 +1,28 @@
+{
+  "settings": {
+    "tasks": 200,
+    "fault_rate": 0.1,
+    "audit_recall": 0.7,
+    "seeds": 30
+  },
+  "corrupted_share": {
+    "Shared dict, last write wins": {
+      "mean": 0.28933333333333333,
+      "std": 0.12065720417588098
+    },
+    "Ledger with guards": {
+      "mean": 0.113,
+      "std": 0.09893920111483304
+    },
+    "Ledger with guards and audited retraction": {
+      "mean": 0.04,
+      "std": 0.0787181791210768
+    }
+  },
+  "guard_blocks_per_run": 12.733333333333333,
+  "commits_undone_per_run": 15.266666666666667,
+  "recovery_cost": {
+    "rollback_to_first_fault": 155.56666666666666,
+    "cascading_retraction": 15.266666666666667
+  }
+}
