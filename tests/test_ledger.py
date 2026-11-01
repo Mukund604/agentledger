@@ -185,3 +185,33 @@ def test_sqlite_persistence_survives_reopen(tmp_path):
     reopened = Ledger(path=path)
     assert reopened.snapshot() == {"x": 1, "y": {"nested": [1, 2]}}
     assert put(reopened, "z", 3) == 4
+
+
+def test_fork_isolates_and_merge_applies():
+    ledger = Ledger()
+    put(ledger, "x", 1)
+    branch = ledger.fork()
+    put(branch, "x", 2)
+    put(branch, "y", 3)
+    assert ledger.get("x") == 1 and branch.get("x") == 2
+    assert len(ledger.merge(branch)) == 2
+    assert ledger.snapshot() == {"x": 2, "y": 3}
+
+
+def test_merge_still_runs_guards():
+    ledger = Ledger([ConflictGuard()])
+    put(ledger, "x", "a", confidence=0.9)
+    branch = Ledger()
+    put(branch, "x", "b", confidence=0.1)
+    with pytest.raises(Rejected):
+        ledger.merge(branch)
+
+
+def test_cascade_through_long_chain():
+    ledger = Ledger()
+    root = put(ledger, "k0", 0)
+    for i in range(1, 200):
+        with ledger.begin("a") as tx:
+            tx.write(f"k{i}", tx.read(f"k{i-1}") + 1)
+    assert len(ledger.retract(root)) == 200
+    assert ledger.snapshot() == {}

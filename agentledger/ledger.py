@@ -5,6 +5,7 @@ commit. A commit is all or nothing, passes every guard, and fails if something i
 changed since. Because each commit records what it read, retracting a bad commit can
 find and undo everything built on top of it.
 """
+import bisect
 import itertools
 import json
 import sqlite3
@@ -81,6 +82,7 @@ class Ledger:
         self.guards = list(guards)
         self.state, self.commits, self.rejections = {}, {}, []
         self.checkpoints = {}
+        self._writers = {}  # key -> commit ids that wrote it, so retraction stays fast on long logs
         self._ids = itertools.count(1)
         self._versions = itertools.count(1)
         self._lock = threading.RLock()
@@ -129,6 +131,7 @@ class Ledger:
 
     def _apply(self, commit):
         for write in commit.writes:
+            self._writers.setdefault(write.key, []).append(commit.id)
             commit.previous[write.key] = self.state.get(write.key)
             self.state[write.key] = Entry(write.value, next(self._versions), commit.id, write.agent, write.confidence)
         self.commits[commit.id] = commit
@@ -150,22 +153,48 @@ class Ledger:
     def dependents(self, commit_id):
         """Commits that read a key written by this commit, directly or transitively."""
         tainted, found = {commit_id}, []
-        for cid in sorted(self.commits):
+        readers = self._readers_after(commit_id)
+        for cid in readers:
             commit = self.commits[cid]
-            if cid <= commit_id or commit.retracted:
-                continue
             if any(self._read_came_from(commit, key, tainted) for key in commit.reads):
                 tainted.add(cid)
                 found.append(cid)
         return found
 
+    def _readers_after(self, commit_id):
+        return [cid for cid in sorted(self.commits) if cid > commit_id and not self.commits[cid].retracted and self.commits[cid].reads]
+
     def _read_came_from(self, commit, key, tainted):
         """True if the newest write to key before this commit belongs to a tainted commit."""
-        for cid in range(commit.id - 1, 0, -1):
-            earlier = self.commits.get(cid)
-            if earlier and not (earlier.retracted and cid not in tainted) and any(w.key == key for w in earlier.writes):
-                return cid in tainted
+        writers = self._writers.get(key, [])
+        for cid in reversed(writers[:bisect.bisect_left(writers, commit.id)]):
+            if cid in tainted:
+                return True
+            if not self.commits[cid].retracted:
+                return False
         return False
+
+    def fork(self):
+        """An isolated copy for trying a risky plan. Merge the result back with merge()."""
+        branch = Ledger(self.guards)
+        branch.state = dict(self.state)
+        branch._base = max(self.commits, default=0)
+        branch._versions = itertools.count(next(self._versions) + 1)
+        branch._ids = itertools.count(branch._base + 1)
+        return branch
+
+    def merge(self, branch):
+        """Replays a fork's commits as one transaction per commit. Guards and conflicts still apply."""
+        merged = []
+        for cid in sorted(branch.commits):
+            commit = branch.commits[cid]
+            if commit.retracted:
+                continue
+            tx = self.begin(commit.agent)
+            for write in commit.writes:
+                tx.writes[write.key] = write
+            merged.append(tx.commit())
+        return merged
 
     def retract(self, commit_id, cascade=True):
         """Undoes a commit and, by default, everything derived from it. Returns the ids undone."""
@@ -187,7 +216,7 @@ class Ledger:
 
     def _restore(self, key):
         """Sets key to the newest live write, so retracting out of order stays correct."""
-        for cid in sorted(self.commits, reverse=True):
+        for cid in reversed(self._writers.get(key, [])):
             commit = self.commits[cid]
             if commit.retracted:
                 continue

@@ -29,24 +29,44 @@ ledger.get("forecast")           # None
 
 ## Does it help?
 
-[`benchmarks/fault_injection.py`](benchmarks/fault_injection.py) simulates a 200 step pipeline where each step derives a fact from earlier ones, over 30 seeds. 10% of steps misbehave: an impossible value, an unsure overwrite of a good fact, or a plausible wrong value that no guard can catch. An auditor later finds 70% of the plausible ones.
+[`benchmarks/`](benchmarks/) simulates 200 step pipelines where each step derives a fact from earlier ones, over 40 seeds per setting. Steps misbehave in three ways: an impossible value, an unsure overwrite of a good fact, or a plausible wrong value that no guard can catch.
 
-| Memory | Final facts that are wrong |
-| :--- | ---: |
-| Shared dict, last write wins | 28.9% ± 12.1 |
-| Ledger with guards | 11.3% ± 9.9 |
-| Ledger with guards and audited retraction | 4.0% ± 7.9 |
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="results/charts/fault-rate-dark.png" />
+<img src="results/charts/fault-rate-light.png" width="100%" alt="Final wrong facts against fault rate for three designs, with confidence bands" />
+</picture>
 
-Recovering from the audited faults undid about 15 commits per run with cascading retraction, against about 156 for rolling back to a checkpoint before the first fault.
+At a 10% fault rate, the share of final facts that are wrong falls from **29.8%** with a shared dict to **12.0%** with guards and **4.3%** with guards and retraction, assuming an auditor finds 70% of plausible faults.
 
-**These numbers come from scripted agents and no LLM.** The fault rate and auditor recall are assumptions I chose, so they show how the memory layer behaves and not how much a real system would improve. Recovery also assumes a rerun step succeeds. The remaining 4% comes from the faults the auditor never found: a ledger can only undo what something detects.
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="results/charts/audit-recall-dark.png" />
+<img src="results/charts/audit-recall-light.png" width="100%" alt="Final wrong facts against auditor recall: retraction falls to zero only when every fault is found" />
+</picture>
+
+**The second chart is the honest limit:** a ledger can only undo what something detects. With no auditor, retraction adds nothing beyond guards.
+
+Recovery is also targeted. Undoing audited faults took about 15 commits per run with cascading retraction, against about 156 for rolling back to a checkpoint before the first fault.
+
+**These numbers come from scripted agents and no LLM.** The fault rates and auditor recall are assumptions, so they show how the memory layer behaves and not how much a real system would improve. Recovery also assumes a rerun step succeeds.
+
+### Speed
+
+In memory on an Apple M5, one thread: about 413K commits per second with a 50,000 commit log, and 1.1 ms to retract a commit with 50 dependents. The bottleneck in a real agent will be the LLM. SQLite persistence is slower and isn't included.
+
+## Trying risky plans
+
+```python
+branch = ledger.fork()
+# ...let an agent work in the branch...
+ledger.merge(branch)    # guards still apply
+```
 
 ## Limitations
 
 * It's a single process library with one lock, not a distributed store.
 * Guards are only as good as their rules. `ConflictGuard` compares values for equality and trusts self reported confidence, so it can't detect that two differently worded facts contradict.
 * Taint tracking only sees reads made through the transaction. An agent that copies a value out of band isn't tracked.
-* Retraction scans history, so very long logs will need indexing.
+* Forks are only in memory, and `merge` replays writes without conflict resolution beyond the guards.
 
 ## Run it
 
@@ -54,6 +74,7 @@ Recovering from the audited faults undid about 15 commits per run with cascading
 pip install -e ".[dev]"
 pytest
 python -m benchmarks.fault_injection
+python -m benchmarks.sweep
 ```
 
 No dependencies beyond the Python standard library.
